@@ -52,7 +52,7 @@ unzip apache-maven-3.9.9-bin.zip
 cp -r apache-maven-3.9.9 /usr/local/maven3.9
 export MAVEN_OPTS="-Xmx512m"
 
-git clone -b local https://github.com/hkhcoder/vprofile-project.git
+git clone -b local https://github.com/HRagab211/-1-Devops-vprofile.git
 cd vprofile-project
 /usr/local/maven3.9/bin/mvn install
 systemctl stop tomcat

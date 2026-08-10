@@ -1,67 +1,88 @@
 #!/bin/bash
 set -euo pipefail
 
+exec > >(tee -a /var/log/cache-mq-user-data.log | logger -t cache-mq-user-data -s 2>/dev/console) 2>&1
+
+# ==========================================================
+# Config
+# ==========================================================
 RABBITMQ_USER="test"
 RABBITMQ_PASSWORD="test"
 
-echo "=============================="
-echo " Updating system"
-echo "=============================="
-sudo dnf update -y
+PUBLISH_TO_SSM="true"
+SSM_CACHE_IP_PARAM="/deploy/cache/private-ip"
+SSM_RABBITMQ_IP_PARAM="/deploy/rabbitmq/private-ip"
 
 echo "=============================="
-echo " Installing common packages"
+echo " Starting cache/mq provisioning"
 echo "=============================="
-sudo dnf install -y wget curl logrotate ca-certificates
+
+# ==========================================================
+# Update system and install common packages
+# ==========================================================
+dnf update -y
+
+dnf install -y \
+  wget \
+  logrotate \
+  ca-certificates \
+  iproute \
+  awscli
+
+# ==========================================================
+# Get metadata
+# ==========================================================
+IMDS_TOKEN="$(curl -fsS -X PUT \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" \
+  http://169.254.169.254/latest/api/token || true)"
+
+if [ -n "$IMDS_TOKEN" ]; then
+  IMDS_CURL="curl -fsS -H X-aws-ec2-metadata-token:$IMDS_TOKEN"
+else
+  IMDS_CURL="curl -fsS"
+fi
+
+PRIVATE_IP="$($IMDS_CURL http://169.254.169.254/latest/meta-data/local-ipv4)"
+INSTANCE_DOCUMENT="$($IMDS_CURL http://169.254.169.254/latest/dynamic/instance-identity/document)"
+AWS_REGION="$(echo "$INSTANCE_DOCUMENT" | awk -F\" '/region/ {print $4}')"
+
+echo "Private IP: $PRIVATE_IP"
+echo "AWS Region: $AWS_REGION"
 
 # ==========================================================
 # Install Memcached
 # ==========================================================
-echo "=============================="
-echo " Installing Memcached"
-echo "=============================="
-sudo dnf install -y memcached
-
-sudo systemctl enable memcached
-sudo systemctl start memcached
-
-echo "=============================="
-echo " Configuring Memcached to listen on all interfaces"
-echo "=============================="
+dnf install -y memcached
 
 if [ -f /etc/sysconfig/memcached ]; then
-    sudo sed -i 's/^OPTIONS=.*/OPTIONS="-l 0.0.0.0"/' /etc/sysconfig/memcached
+  if grep -q '^OPTIONS=' /etc/sysconfig/memcached; then
+    sed -i 's#^OPTIONS=.*#OPTIONS="-l 0.0.0.0 -U 0"#' /etc/sysconfig/memcached
+  else
+    echo 'OPTIONS="-l 0.0.0.0 -U 0"' >> /etc/sysconfig/memcached
+  fi
 else
-    echo 'OPTIONS="-l 0.0.0.0"' | sudo tee /etc/sysconfig/memcached
+  echo 'OPTIONS="-l 0.0.0.0 -U 0"' > /etc/sysconfig/memcached
 fi
 
-sudo systemctl restart memcached
-sudo systemctl --no-pager status memcached || true
-
-echo "=============================="
-echo " Testing Memcached port"
-echo "=============================="
-sudo ss -lntp | grep 11211 || true
+systemctl enable --now memcached
+systemctl restart memcached
 
 # ==========================================================
-# Install RabbitMQ
+# Install RabbitMQ repositories
 # ==========================================================
-echo "=============================="
-echo " Installing RabbitMQ official repositories"
-echo "=============================="
-
 ARCH="$(uname -m)"
+
 if [ "$ARCH" != "x86_64" ]; then
-    echo "ERROR: This RabbitMQ repo method is intended for x86_64 Amazon Linux 2023."
-    echo "Current architecture: $ARCH"
-    exit 1
+  echo "ERROR: This RabbitMQ repo method is intended for x86_64 Amazon Linux 2023."
+  echo "Current architecture: $ARCH"
+  exit 1
 fi
 
-sudo rpm --import "https://github.com/rabbitmq/signing-keys/releases/download/3.0/rabbitmq-release-signing-key.asc"
-sudo rpm --import "https://github.com/rabbitmq/signing-keys/releases/download/3.0/cloudsmith.rabbitmq-erlang.E495BB49CC4BBE5B.key"
-sudo rpm --import "https://github.com/rabbitmq/signing-keys/releases/download/3.0/cloudsmith.rabbitmq-server.9F4587F226208342.key"
+rpm --import "https://github.com/rabbitmq/signing-keys/releases/download/3.0/rabbitmq-release-signing-key.asc"
+rpm --import "https://github.com/rabbitmq/signing-keys/releases/download/3.0/cloudsmith.rabbitmq-erlang.E495BB49CC4BBE5B.key"
+rpm --import "https://github.com/rabbitmq/signing-keys/releases/download/3.0/cloudsmith.rabbitmq-server.9F4587F226208342.key"
 
-sudo tee /etc/yum.repos.d/rabbitmq.repo > /dev/null <<'EOF'
+cat > /etc/yum.repos.d/rabbitmq.repo <<'EOF'
 [modern-erlang]
 name=modern-erlang-el9
 baseurl=https://yum1.rabbitmq.com/erlang/el/9/$basearch
@@ -126,59 +147,88 @@ autorefresh=1
 type=rpm-md
 EOF
 
-echo "=============================="
-echo " Installing Erlang and RabbitMQ"
-echo "=============================="
-sudo dnf clean all
-sudo dnf makecache -y
-sudo dnf install -y erlang rabbitmq-server
+# ==========================================================
+# Install Erlang and RabbitMQ
+# ==========================================================
+dnf clean all
+dnf makecache -y
+dnf install -y erlang rabbitmq-server
 
-echo "=============================="
-echo " Starting RabbitMQ"
-echo "=============================="
-sudo systemctl enable rabbitmq-server
-sudo systemctl start rabbitmq-server
+# ==========================================================
+# Configure RabbitMQ
+# ==========================================================
+cat > /etc/rabbitmq/rabbitmq.conf <<EOF
+listeners.tcp.default = 5672
 
-echo "=============================="
-echo " Enabling RabbitMQ Management Plugin"
-echo "=============================="
-sudo rabbitmq-plugins enable rabbitmq_management
+management.tcp.port = 15672
+management.tcp.ip = 0.0.0.0
+EOF
 
-echo "=============================="
-echo " Creating RabbitMQ user"
-echo "=============================="
-if sudo rabbitmqctl list_users | grep -q "^${RABBITMQ_USER}[[:space:]]"; then
-    sudo rabbitmqctl change_password "${RABBITMQ_USER}" "${RABBITMQ_PASSWORD}"
+chown rabbitmq:rabbitmq /etc/rabbitmq/rabbitmq.conf
+chmod 640 /etc/rabbitmq/rabbitmq.conf
+
+rabbitmq-plugins enable --offline rabbitmq_management
+
+systemctl enable --now rabbitmq-server
+rabbitmqctl await_startup
+
+# ==========================================================
+# Create RabbitMQ user
+# ==========================================================
+if rabbitmqctl list_users | awk '{print $1}' | grep -qx "${RABBITMQ_USER}"; then
+  rabbitmqctl change_password "${RABBITMQ_USER}" "${RABBITMQ_PASSWORD}"
 else
-    sudo rabbitmqctl add_user "${RABBITMQ_USER}" "${RABBITMQ_PASSWORD}"
+  rabbitmqctl add_user "${RABBITMQ_USER}" "${RABBITMQ_PASSWORD}"
 fi
 
-sudo rabbitmqctl set_user_tags "${RABBITMQ_USER}" administrator
-sudo rabbitmqctl set_permissions -p / "${RABBITMQ_USER}" ".*" ".*" ".*"
+rabbitmqctl set_user_tags "${RABBITMQ_USER}" administrator
+rabbitmqctl set_permissions -p / "${RABBITMQ_USER}" ".*" ".*" ".*"
+
+if rabbitmqctl list_users | awk '{print $1}' | grep -qx "guest"; then
+  rabbitmqctl delete_user guest
+fi
+
+systemctl restart rabbitmq-server
+rabbitmqctl await_startup
+
+# ==========================================================
+# Publish private IP to SSM
+# ==========================================================
+if [ "$PUBLISH_TO_SSM" = "true" ]; then
+  if aws ssm put-parameter \
+    --name "$SSM_CACHE_IP_PARAM" \
+    --type "String" \
+    --value "$PRIVATE_IP" \
+    --overwrite \
+    --region "$AWS_REGION"; then
+    echo "Cache private IP published to SSM."
+  else
+    echo "WARNING: Could not publish cache private IP to SSM."
+  fi
+
+  if aws ssm put-parameter \
+    --name "$SSM_RABBITMQ_IP_PARAM" \
+    --type "String" \
+    --value "$PRIVATE_IP" \
+    --overwrite \
+    --region "$AWS_REGION"; then
+    echo "RabbitMQ private IP published to SSM."
+  else
+    echo "WARNING: Could not publish RabbitMQ private IP to SSM."
+  fi
+fi
 
 echo "=============================="
-echo " Disabling guest remote restriction by using custom user instead"
+echo " cache/mq provisioning completed"
+echo "Private IP: $PRIVATE_IP"
+echo "Memcached: $PRIVATE_IP:11211"
+echo "RabbitMQ AMQP: $PRIVATE_IP:5672"
+echo "RabbitMQ UI: http://$PRIVATE_IP:15672"
+echo "RabbitMQ user: $RABBITMQ_USER"
+echo "RabbitMQ password: $RABBITMQ_PASSWORD"
+echo "Log file: /var/log/cache-mq-user-data.log"
 echo "=============================="
-sudo rabbitmqctl delete_user guest || true
 
-sudo systemctl restart rabbitmq-server
-
-echo "=============================="
-echo " RabbitMQ status"
-echo "=============================="
-sudo systemctl --no-pager status rabbitmq-server || true
-sudo rabbitmqctl status || true
-
-echo "=============================="
-echo " Listening ports"
-echo "=============================="
-sudo ss -lntp | grep -E '11211|5672|15672' || true
-
-echo "=============================="
-echo " Done"
-echo "Memcached: 11211"
-echo "RabbitMQ AMQP: 5672"
-echo "RabbitMQ UI: http://SERVER_IP:15672"
-echo "RabbitMQ user: ${RABBITMQ_USER}"
-echo "RabbitMQ password: ${RABBITMQ_PASSWORD}"
-echo "=============================="
+systemctl --no-pager status memcached || true
+systemctl --no-pager status rabbitmq-server || true
+ss -lntp | grep -E '11211|5672|15672' || true
