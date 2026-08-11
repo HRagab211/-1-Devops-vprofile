@@ -1,0 +1,64 @@
+---
+- name: Configure Java application server
+  hosts: web
+  become: true
+
+  vars_files:
+    - vars/main.yaml
+
+  tasks:
+    - name: Update and upgrade apt packages
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: dist
+
+    - name: Install required applications
+      ansible.builtin.apt:
+        name: "{{ applications }}"
+        state: present
+        install_recommends: false
+    
+    - name: Start and enable Tomcat service
+      ansible.builtin.systemd:
+        name: tomcat10
+        state: started
+        enabled: true
+
+    - name: clone application repository
+      ansible.builtin.git:
+        repo: "https://github.com/HRagab211/-1-Devops-vprofile.git"
+        dest: /opt/vprofile
+
+    - name: Configure JDBC database endpoint
+      ansible.builtin.lineinfile:
+        path: /opt/vprofile/src/main/resources/application.properties
+        regexp: '^jdbc\.url='
+        line: "jdbc.url=jdbc:mysql://{{ rds_endpoint }}:3306/accounts?useUnicode=true&characterEncoding=UTF-8&zeroDateTimeBehavior=convertToNull"
+
+    - name: configure memcached endpoint
+      ansible.builtin.lineinfile:
+        path: /opt/vprofile/src/main/resources/application.properties
+        regexp: '^memcached.active.host='
+        line: "memcached.active.host={{ memcached_endpoint }}"
+    
+    - name: Build the application using Maven
+      ansible.builtin.command:
+        cmd: mvn clean package
+        chdir: /opt/vprofile
+
+    #  change the ownership of the generated WAR file to the Tomcat user
+    - name: Change ownership of the WAR file
+      ansible.builtin.file:
+        path: /opt/vprofile/target/vprofile.war
+        owner: tomcat
+        group: tomcat
+    
+    # Delete default ROOT.war file from Tomcat webapps directory
+    - name: Delete default ROOT.war file from Tomcat webapps directory
+      ansible.builtin.file:
+        path: /var/lib/tomcat10/webapps/ROOT.war
+        state: absent
+    # move build artifact to Tomcat webapps directory
+    - name: Move WAR file to Tomcat webapps directory
+      ansible.builtin.command:
+        cmd: mv /opt/vprofile/target/vprofile.war /var/lib/tomcat10/webapps/Root.war

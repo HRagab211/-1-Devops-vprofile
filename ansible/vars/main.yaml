@@ -1,0 +1,14 @@
+applications:
+  - ca-certificates
+  - curl
+  - git
+  - gnupg
+  - jq
+  - mariadb-client
+  - maven
+  - netcat-openbsd
+  - openjdk-17-jdk
+  - openssl
+  - rabbitmq-server
+  - stunnel4
+  - tar
