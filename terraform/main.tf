@@ -36,8 +36,8 @@ data "aws_ami" "ubuntu" {
 resource "aws_instance" "java_ec2" {
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = "c7i-flex.large"
-  vpc_security_group_ids      = [aws_security_group.ec2_sg.id]
-  key_name                    = aws_key_pair.deployer.ubuntu2
+  vpc_security_group_ids      = [aws_security_group.app_sg.id]
+  key_name                    = "ubuntu2"
   associate_public_ip_address = true
   tags = {
     Name = "java application"
@@ -50,7 +50,7 @@ resource "aws_elasticache_cluster" "java_memcached" {
   engine               = "memcached"
   node_type            = "cache.m4.large"
   num_cache_nodes      = 2
-  parameter_group_name = "default.memcached1.4"
+  parameter_group_name = "default.memcached1.6"
   port                 = 11211
   security_group_ids   = [aws_security_group.memcached_sg.id]
 }

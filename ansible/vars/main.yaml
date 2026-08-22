@@ -12,3 +12,4 @@ applications:
   - rabbitmq-server
   - stunnel4
   - tar
+  - unzip

@@ -1,3 +1,20 @@
-.terraform
-terraform.tfstate
-terraform.tfstate.backup
+# Terraform working directories
+**/.terraform/*
+
+# Terraform state contains infrastructure data and secrets
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+
+# Saved Terraform plans
+*.tfplan
+*_plan
+*plan.out
+
+# Terraform crash and override files
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json

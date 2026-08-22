@@ -6,6 +6,12 @@
 #              -> local RabbitMQ (the application is not compatible with SQS)
 #              -> local Elasticsearch 7.10.2 (bound to 127.0.0.1 only)
 
+mariadb \
+  -h terraform-20260811130926104600000001.cvcw4kkcgfsm.eu-central-1.rds.amazonaws.com \
+  -P 3306 \
+  -u admin \
+  -p
+
 set -Eeuo pipefail
 umask 027
 

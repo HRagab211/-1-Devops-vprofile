@@ -1,5 +1,5 @@
 ---
-- name: Configure Java application server
+- name: Configure and deploy Java application server
   hosts: web
   become: true
 
@@ -7,58 +7,225 @@
     - vars/main.yaml
 
   tasks:
-    - name: Update and upgrade apt packages
+    # ---------------------------------------------------------
+    # 1. Update apt cache
+    # ---------------------------------------------------------
+    - name: Update apt cache
       ansible.builtin.apt:
         update_cache: true
-        upgrade: dist
+        cache_valid_time: 3600
 
+    # ---------------------------------------------------------
+    # 2. Install required packages
+    # Do NOT include tomcat9 here
+    # ---------------------------------------------------------
     - name: Install required applications
       ansible.builtin.apt:
         name: "{{ applications }}"
         state: present
         install_recommends: false
-    
+
+    # ---------------------------------------------------------
+    # 3. Create Tomcat system user
+    # ---------------------------------------------------------
+    - name: Create Tomcat user
+      ansible.builtin.user:
+        name: tomcat
+        system: true
+        home: /opt/tomcat
+        shell: /usr/sbin/nologin
+        create_home: false
+
+    # ---------------------------------------------------------
+    # 4. Create Tomcat installation directory
+    # ---------------------------------------------------------
+    - name: Create Tomcat directory
+      ansible.builtin.file:
+        path: /opt/tomcat
+        state: directory
+        owner: tomcat
+        group: tomcat
+        mode: "0755"
+
+    # ---------------------------------------------------------
+    # 5. Download Tomcat 10.1
+    # You can later move this version to vars/main.yaml
+    # ---------------------------------------------------------
+    - name: Download Tomcat 10.1
+      ansible.builtin.get_url:
+        url: "https://archive.apache.org/dist/tomcat/tomcat-10/v10.1.44/bin/apache-tomcat-10.1.44.tar.gz"
+        dest: /tmp/apache-tomcat-10.1.44.tar.gz
+        mode: "0644"
+
+    # ---------------------------------------------------------
+    # 6. Extract Tomcat
+    # creates prevents extracting it again every run
+    # ---------------------------------------------------------
+    - name: Extract Tomcat
+      ansible.builtin.unarchive:
+        src: /tmp/apache-tomcat-10.1.44.tar.gz
+        dest: /opt/tomcat
+        remote_src: true
+        extra_opts:
+          - --strip-components=1
+        creates: /opt/tomcat/bin/catalina.sh
+
+    # ---------------------------------------------------------
+    # 7. Fix Tomcat ownership
+    # ---------------------------------------------------------
+    - name: Set Tomcat ownership
+      ansible.builtin.file:
+        path: /opt/tomcat
+        owner: tomcat
+        group: tomcat
+        recurse: true
+
+    # ---------------------------------------------------------
+    # 8. Make Tomcat scripts executable
+    # ---------------------------------------------------------
+    - name: Make Tomcat scripts executable
+      ansible.builtin.file:
+        path: /opt/tomcat/bin
+        mode: "0755"
+        recurse: true
+
+    # ---------------------------------------------------------
+    # 9. Create systemd service for Tomcat
+    # Force Java 17 here
+    # ---------------------------------------------------------
+    - name: Create Tomcat systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/tomcat.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Apache Tomcat 10.1
+          After=network.target
+
+          [Service]
+          Type=simple
+
+          User=tomcat
+          Group=tomcat
+
+          Environment="JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64"
+          Environment="CATALINA_HOME=/opt/tomcat"
+          Environment="CATALINA_BASE=/opt/tomcat"
+
+          ExecStart=/opt/tomcat/bin/catalina.sh run
+
+          Restart=on-failure
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+
+    # ---------------------------------------------------------
+    # 10. Reload systemd after creating service
+    # ---------------------------------------------------------
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    # ---------------------------------------------------------
+    # 11. Start and enable Tomcat 10
+    # ---------------------------------------------------------
     - name: Start and enable Tomcat service
       ansible.builtin.systemd:
-        name: tomcat10
+        name: tomcat
         state: started
         enabled: true
 
-    - name: clone application repository
+    # ---------------------------------------------------------
+    # 12. Clone Java application repository
+    # ---------------------------------------------------------
+    - name: Clone application repository
       ansible.builtin.git:
         repo: "https://github.com/HRagab211/-1-Devops-vprofile.git"
         dest: /opt/vprofile
+        version: main
+        force: true
 
+    # ---------------------------------------------------------
+    # 13. Configure RDS endpoint
+    # ---------------------------------------------------------
     - name: Configure JDBC database endpoint
       ansible.builtin.lineinfile:
         path: /opt/vprofile/src/main/resources/application.properties
         regexp: '^jdbc\.url='
-        line: "jdbc.url=jdbc:mysql://{{ rds_endpoint }}:3306/accounts?useUnicode=true&characterEncoding=UTF-8&zeroDateTimeBehavior=convertToNull"
+        line: "jdbc.url=jdbc:mysql://{{ rds_endpoint }}/mydb?useUnicode=true&characterEncoding=UTF-8&zeroDateTimeBehavior=convertToNull"
 
-    - name: configure memcached endpoint
+    # ---------------------------------------------------------
+    # 14. Configure Memcached endpoint
+    # ---------------------------------------------------------
+    - name: Configure Memcached endpoint
       ansible.builtin.lineinfile:
         path: /opt/vprofile/src/main/resources/application.properties
-        regexp: '^memcached.active.host='
+        regexp: '^memcached\.active\.host='
         line: "memcached.active.host={{ memcached_endpoint }}"
-    
-    - name: Build the application using Maven
+
+    # ---------------------------------------------------------
+    # 15. Build application
+    # ---------------------------------------------------------
+    - name: Build application using Maven
       ansible.builtin.command:
         cmd: mvn clean package
         chdir: /opt/vprofile
 
-    #  change the ownership of the generated WAR file to the Tomcat user
-    - name: Change ownership of the WAR file
+    # ---------------------------------------------------------
+    # 16. Stop Tomcat before deployment
+    # ---------------------------------------------------------
+    - name: Stop Tomcat before deployment
+      ansible.builtin.systemd:
+        name: tomcat
+        state: stopped
+
+    # ---------------------------------------------------------
+    # 17. Remove old ROOT.war
+    # ---------------------------------------------------------
+    - name: Remove old ROOT WAR file
       ansible.builtin.file:
-        path: /opt/vprofile/target/vprofile.war
+        path: /opt/tomcat/webapps/ROOT.war
+        state: absent
+
+    # ---------------------------------------------------------
+    # 18. Remove old exploded ROOT directory
+    # ---------------------------------------------------------
+    - name: Remove old exploded ROOT application
+      ansible.builtin.file:
+        path: /opt/tomcat/webapps/ROOT
+        state: absent
+
+    # ---------------------------------------------------------
+    # 19. Deploy new WAR
+    # ---------------------------------------------------------
+    - name: Deploy application WAR to Tomcat
+      ansible.builtin.copy:
+        src: /opt/vprofile/target/vprofile-v2.war
+        dest: /opt/tomcat/webapps/ROOT.war
+        remote_src: true
         owner: tomcat
         group: tomcat
-    
-    # Delete default ROOT.war file from Tomcat webapps directory
-    - name: Delete default ROOT.war file from Tomcat webapps directory
-      ansible.builtin.file:
-        path: /var/lib/tomcat10/webapps/ROOT.war
-        state: absent
-    # move build artifact to Tomcat webapps directory
-    - name: Move WAR file to Tomcat webapps directory
+        mode: "0644"
+
+    # ---------------------------------------------------------
+    # 20. Start Tomcat after deployment
+    # ---------------------------------------------------------
+    - name: Start Tomcat after deployment
+      ansible.builtin.systemd:
+        name: tomcat
+        state: started
+        enabled: true
+
+    # ---------------------------------------------------------
+    # 21. import DB from src to RDS
+    # ---------------------------------------------------------
+    - name: Import database to RDS
       ansible.builtin.command:
-        cmd: mv /opt/vprofile/target/vprofile.war /var/lib/tomcat10/webapps/Root.war
+        cmd: >
+          mariadb
+          -h {{ rds_endpoint }}
+          -P 3306
+          -u admin
+          -p admin123
+          mydb < /opt/vprofile/src/main/resources/db_backup.sql
