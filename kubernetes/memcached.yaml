@@ -1,0 +1,70 @@
+# Memcached -- used lazily by UserController GET /users/{id}. Cache only: no persistence,
+# no clustering, no operator, and no credentials (the app's memcached client does not
+# authenticate).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vprofile-cache
+  namespace: vprofile
+  labels:
+    app.kubernetes.io/name: memcached
+    app.kubernetes.io/part-of: vprofile
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: memcached
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: memcached
+        app.kubernetes.io/part-of: vprofile
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: memcached
+          image: memcached:1.6-alpine
+          imagePullPolicy: IfNotPresent
+          # Same arguments the Compose lab uses: 64 MB of cache, listening on all
+          # interfaces so the Service can reach it.
+          args: ["-m", "64", "-l", "0.0.0.0", "-p", "11211", "-v"]
+          ports:
+            - name: memcached
+              containerPort: 11211
+          # TCP probes: memcached speaks its own protocol, so an accepted connection is the
+          # meaningful signal.
+          readinessProbe:
+            tcpSocket:
+              port: memcached
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: memcached
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vprofile-cache
+  namespace: vprofile
+  labels:
+    app.kubernetes.io/name: memcached
+    app.kubernetes.io/part-of: vprofile
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: memcached
+  ports:
+    - name: memcached
+      port: 11211
+      targetPort: memcached
+      protocol: TCP

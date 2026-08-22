@@ -1,0 +1,59 @@
+# Non-sensitive application configuration.
+#
+# Every key here matches a ${ENV_VAR:default} placeholder in
+# src/main/resources/application.properties (or in logback.xml / docker/app/entrypoint.sh).
+# Hostnames are Kubernetes Service DNS names inside namespace `vprofile` -- never pod IPs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vprofile-config
+  namespace: vprofile
+  labels:
+    app.kubernetes.io/part-of: vprofile
+data:
+  # --- MySQL -----------------------------------------------------------------
+  # MYSQL_DATABASE is also consumed by the MySQL StatefulSet. It must stay "accounts":
+  # db_backup.sql has no CREATE DATABASE and no USE statement, so the MySQL entrypoint
+  # supplies the schema by running init files with --database="$MYSQL_DATABASE".
+  MYSQL_HOST: "vprofile-db"
+  MYSQL_PORT: "3306"
+  MYSQL_DATABASE: "accounts"
+  JDBC_DRIVER_CLASS_NAME: "com.mysql.cj.jdbc.Driver"
+  JDBC_URL: "jdbc:mysql://vprofile-db:3306/accounts?useUnicode=true&characterEncoding=UTF-8&zeroDateTimeBehavior=convertToNull"
+
+  # --- Memcached -------------------------------------------------------------
+  # Only one instance runs in this lab, so the "standby" host points at the same Service.
+  MEMCACHED_HOST: "vprofile-cache"
+  MEMCACHED_PORT: "11211"
+  MEMCACHED_STANDBY_HOST: "vprofile-cache"
+  MEMCACHED_STANDBY_PORT: "11211"
+
+  # --- RabbitMQ --------------------------------------------------------------
+  RABBITMQ_HOST: "vprofile-rabbitmq"
+  RABBITMQ_PORT: "5672"
+
+  # --- Elasticsearch ---------------------------------------------------------
+  # NOT deployed. beans/Components.java declares @Value("${elasticsearch.*}") with no
+  # defaults and the placeholder configurer is not ignore-unresolvable, so these four keys
+  # must resolve or the Spring root context fails to start. localhost:9200 is unreachable,
+  # which is fine: nothing dials it unless you open /user/elasticsearch.
+  ELASTICSEARCH_HOST: "localhost"
+  ELASTICSEARCH_PORT: "9200"
+  ELASTICSEARCH_CLUSTER: "vprofile"
+  ELASTICSEARCH_NODE: "vprofilenode"
+
+  # --- Logging ---------------------------------------------------------------
+  # logback.xml defaults every level to OFF; raise them so `kubectl logs` is useful.
+  LOG_LEVEL: "INFO"
+  APP_LOG_LEVEL: "INFO"
+  SPRING_LOG_LEVEL: "INFO"
+  HIBERNATE_LOG_LEVEL: "WARN"
+
+  # --- Startup dependency wait ------------------------------------------------
+  # docker/app/entrypoint.sh performs a bounded TCP wait before exec'ing catalina.sh.
+  # This is NOT belt-and-braces: appconfig-data.xml builds entityManagerFactory eagerly, so
+  # Hibernate bootstraps against MySQL during context refresh and a failure is never
+  # retried -- Tomcat would then serve 404 forever. Using the entrypoint the image already
+  # ships avoids adding an init container. On timeout it exits 69 and the pod restarts.
+  WAIT_FOR_TCP: "vprofile-db:3306 vprofile-rabbitmq:5672 vprofile-cache:11211"
+  WAIT_FOR_TIMEOUT: "300"

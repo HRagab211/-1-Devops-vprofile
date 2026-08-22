@@ -1,0 +1,19 @@
+# Internal Service for the application. ClusterIP: Tomcat is never exposed directly --
+# nginx is the public entry point.
+apiVersion: v1
+kind: Service
+metadata:
+  name: vprofile-app
+  namespace: vprofile
+  labels:
+    app.kubernetes.io/name: vprofile-app
+    app.kubernetes.io/part-of: vprofile
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: vprofile-app
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

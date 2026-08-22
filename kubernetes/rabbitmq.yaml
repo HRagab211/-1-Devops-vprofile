@@ -1,0 +1,103 @@
+# RabbitMQ -- a real startup dependency, not an optional extra: appconfig-rabbitmq.xml
+# declares <rabbit:annotation-driven/> + <rabbit:admin/> and ConsumerServiceImpl carries a
+# @RabbitListener, so a listener container dials this Service during Spring context refresh.
+#
+# No persistence: the lab publishes and consumes through /rabbitmq on demand and nothing
+# depends on messages surviving a restart, which the Compose lab also demonstrated (its
+# rabbitmq service declares no volume). No clustering, no operator.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vprofile-rabbitmq
+  namespace: vprofile
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/part-of: vprofile
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rabbitmq
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rabbitmq
+        app.kubernetes.io/part-of: vprofile
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: rabbitmq
+          # The -management variant is kept so you can port-forward the UI while learning
+          # (see README.md). The management port stays internal -- it is never exposed by a
+          # NodePort or LoadBalancer.
+          image: rabbitmq:3.13-management-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: amqp
+              containerPort: 5672
+            - name: management
+              containerPort: 15672
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vprofile-secret
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: vprofile-secret
+                  key: RABBITMQ_PASSWORD
+          # Broker boots in ~20-40s on a Vagrant worker; give it room before readiness
+          # failures start counting.
+          startupProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 18
+          readinessProbe:
+            # Stronger than ping: asserts the listeners (including 5672) actually accept
+            # connections, which is exactly what the application needs.
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vprofile-rabbitmq
+  namespace: vprofile
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/part-of: vprofile
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: amqp
+      protocol: TCP
+    # Cluster-internal only. Reach the UI with:
+    #   kubectl port-forward -n vprofile svc/vprofile-rabbitmq 15672:15672
+    - name: management
+      port: 15672
+      targetPort: management
+      protocol: TCP

@@ -1,0 +1,27 @@
+# Plain aggregation of the raw manifests in this directory -- nothing more.
+#
+#   kubectl apply -k kubernetes/
+#
+# No bases, no overlays, no components, no patches, no generators, no environments. If you
+# want to understand a resource, open its file; Kustomize is not hiding anything here.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Every resource below already declares `namespace: vprofile` explicitly, so each file is
+# also valid on its own with `kubectl apply -f`.
+namespace: vprofile
+
+resources:
+  - namespace.yaml
+  - secret.yaml
+  - app-configmap.yaml
+  - mysql-init-configmap.yaml
+  - mysql-statefulset.yaml
+  - mysql-service.yaml
+  - memcached.yaml
+  - rabbitmq.yaml
+  - app-deployment.yaml
+  - app-service.yaml
+  - nginx-configmap.yaml
+  - nginx-deployment.yaml
+  - nginx-service.yaml

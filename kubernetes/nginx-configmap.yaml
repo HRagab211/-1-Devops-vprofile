@@ -1,0 +1,69 @@
+# nginx reverse-proxy configuration, adapted from docker/nginx/default.conf.
+#
+# The only substantive change from the Compose version is the upstream: the Compose service
+# name `app` becomes the Kubernetes Service DNS name `vprofile-app`. No pod IPs, no
+# Compose names, no VM hostnames.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vprofile-nginx-config
+  namespace: vprofile
+  labels:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/part-of: vprofile
+data:
+  default.conf: |
+    # Context path: the application deploys as ROOT.war and every JSP builds links from
+    # ${pageContext.request.contextPath}, which evaluates to "" at the root context. A plain
+    # / -> / proxy is therefore the correct mapping; no rewrite or prefix stripping.
+    upstream vproapp {
+        # Kubernetes Service DNS. Resolved once at startup, which is fine because the
+        # ClusterIP of a Service is stable for its lifetime even as pods come and go.
+        server vprofile-app:8080 max_fails=3 fail_timeout=10s;
+        keepalive 16;
+    }
+
+    server {
+        listen 80;
+        listen [::]:80;
+        server_name _;
+
+        server_tokens off;
+
+        # The app has a file-upload controller; keep a sane ceiling rather than the 1m default.
+        client_max_body_size 16m;
+        client_body_timeout 30s;
+        client_header_timeout 30s;
+
+        # nginx's own health. Terminates here and never touches the upstream, so the nginx
+        # probes report nginx liveness rather than application liveness.
+        location = /nginx-health {
+            access_log off;
+            add_header Content-Type text/plain always;
+            return 200 "ok\n";
+        }
+
+        location / {
+            proxy_pass http://vproapp;
+
+            # Upstream keepalive requires HTTP/1.1 and an empty Connection header.
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+
+            # Forwarding headers, so Tomcat and the application see the original request.
+            proxy_set_header Host              $host;
+            proxy_set_header X-Real-IP         $remote_addr;
+            proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Host  $host;
+            proxy_set_header X-Forwarded-Port  $server_port;
+
+            proxy_connect_timeout 5s;
+            proxy_send_timeout    60s;
+            proxy_read_timeout    60s;
+
+            # Do not silently serve a failed upstream response as success.
+            proxy_next_upstream error timeout http_502 http_503 http_504;
+            proxy_redirect off;
+        }
+    }

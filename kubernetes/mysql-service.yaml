@@ -1,0 +1,20 @@
+# Internal-only database Service. ClusterIP on purpose: no NodePort, no LoadBalancer,
+# no hostPort. Reach it for debugging with:
+#   kubectl exec -it -n vprofile vprofile-db-0 -- mysql -uadmin -p accounts
+apiVersion: v1
+kind: Service
+metadata:
+  name: vprofile-db
+  namespace: vprofile
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/part-of: vprofile
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: mysql
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: mysql
+      protocol: TCP

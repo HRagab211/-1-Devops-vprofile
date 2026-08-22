@@ -1,0 +1,115 @@
+# MySQL 8 -- a StatefulSet rather than a Deployment because the database has a stable
+# identity and owns persistent storage. One replica; no clustering, no operator.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vprofile-db
+  namespace: vprofile
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/part-of: vprofile
+spec:
+  serviceName: vprofile-db
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mysql
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mysql
+        app.kubernetes.io/part-of: vprofile
+    spec:
+      # Generous: MySQL must be allowed to flush and shut down cleanly, otherwise the next
+      # start does crash recovery.
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: mysql
+          # Same patch version the Compose lab was validated against.
+          image: mysql:8.0.43
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: mysql
+              containerPort: 3306
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vprofile-secret
+                  key: MYSQL_ROOT_PASSWORD
+            # Non-root application account, created by the entrypoint and granted full
+            # rights on MYSQL_DATABASE. The app authenticates as this user.
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vprofile-secret
+                  key: MYSQL_USER
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vprofile-secret
+                  key: MYSQL_PASSWORD
+            - name: MYSQL_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: vprofile-config
+                  key: MYSQL_DATABASE
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+            # Read-only so the container can never modify the schema ConfigMap.
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          # -h 127.0.0.1 forces TCP, so this only passes once the real networked server is
+          # up. During first-time initialisation MySQL listens on the socket only and
+          # correctly reports as not ready.
+          startupProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - mysqladmin ping -h 127.0.0.1 -u root -p"$MYSQL_ROOT_PASSWORD" --silent
+            periodSeconds: 10
+            timeoutSeconds: 5
+            # 10s x 30 = 5 minutes, deliberately generous: the very first start creates the
+            # data directory AND imports db_backup.sql before the network listener opens.
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - mysqladmin ping -h 127.0.0.1 -u root -p"$MYSQL_ROOT_PASSWORD" --silent
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # No liveness probe: a busy or briefly unresponsive MySQL must not be killed
+          # mid-write. The startup probe already covers "never came up".
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+      volumes:
+        - name: init
+          configMap:
+            name: vprofile-db-init
+  # The StatefulSet owns its PVC. Deleting the StatefulSet does NOT delete this claim --
+  # that is deliberate, and it is what protects your data. See README.md before you ever
+  # delete it by hand.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: mysql
+          app.kubernetes.io/part-of: vprofile
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 5Gi

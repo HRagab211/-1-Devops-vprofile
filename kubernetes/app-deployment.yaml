@@ -1,0 +1,104 @@
+# VProfile application -- Tomcat 10.1 serving ROOT.war built from THIS repository.
+#
+# No persistent volume: the only writes the app makes outside /tmp are Tomcat's own
+# webapps/ expansion, Jasper's work/ output and logs/, all of which are disposable and
+# recreated on every start. User data lives in MySQL.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vprofile-app
+  namespace: vprofile
+  labels:
+    app.kubernetes.io/name: vprofile-app
+    app.kubernetes.io/part-of: vprofile
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vprofile-app
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vprofile-app
+        app.kubernetes.io/part-of: vprofile
+    spec:
+      # Matches the Compose stop_grace_period. entrypoint.sh execs catalina.sh, so the JVM
+      # is PID 1 and SIGTERM reaches Tomcat's shutdown hook for a graceful connector drain.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: app
+          # Replace this placeholder after pushing the image built from this repository.
+          image: YOUR_REGISTRY/YOUR_VPROFILE_IMAGE:YOUR_TAG
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            # Non-sensitive settings: JDBC URL, backing-service hostnames/ports, log levels,
+            # the startup TCP wait, and the elasticsearch.* keys that must resolve.
+            - configMapRef:
+                name: vprofile-config
+          env:
+            # Credentials, mapped from the single copy in the Secret onto the env var names
+            # application.properties expects. No password is ever written in this file.
+            - name: JDBC_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: vprofile-secret
+                  key: MYSQL_USER
+            - name: JDBC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vprofile-secret
+                  key: MYSQL_PASSWORD
+            - name: RABBITMQ_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: vprofile-secret
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vprofile-secret
+                  key: RABBITMQ_PASSWORD
+          # Probe target is GET / -- UserController @GetMapping("/") returns login.jsp and
+          # touches no backing service, so it never couples liveness to MySQL, Memcached or
+          # RabbitMQ. Deliberately NOT /login: only @PostMapping("/login") exists, so GET
+          # returns 405. Deliberately NOT /users: that would query MySQL and Memcached.
+          #
+          # Startup probe, because Maven-built WAR expansion + Spring context refresh +
+          # Jasper compilation is slow, and entrypoint.sh may additionally be waiting on
+          # dependencies (WAIT_FOR_TCP). 10s x 60 = up to 10 minutes before giving up.
+          # If the Hibernate bootstrap fails, Tomcat serves 404 forever with no retry --
+          # this probe is what turns that dead state into a restart.
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # TCP only for liveness: a slow JSP recompile should not get the pod killed. The
+          # connector being gone means the JVM is genuinely wedged or dead.
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # The image sets -XX:MaxRAMPercentage=75, so the heap tracks this cgroup limit:
+          # 1Gi -> ~768Mi max heap. Raise both together if you raise either.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi

@@ -1,0 +1,28 @@
+# The one externally reachable Service in this lab.
+#
+# NodePort, not Ingress and not LoadBalancer: a kubeadm Vagrant cluster has no cloud load
+# balancer and this lab deliberately installs no ingress controller. Every node proxies the
+# node port, so http://<ANY_NODE_IP>:30080/ works regardless of where the pod landed.
+#
+# Before applying, confirm 30080 is free on your cluster:
+#   kubectl get services --all-namespaces
+# If something already holds it (a Jenkins NodePort in the `helm` namespace, for example),
+# pick another free port in 30000-32767, change it here, and note it in README.md.
+apiVersion: v1
+kind: Service
+metadata:
+  name: vprofile-nginx
+  namespace: vprofile
+  labels:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/part-of: vprofile
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: nginx
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: 30080
+      protocol: TCP

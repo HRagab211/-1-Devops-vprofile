@@ -1,0 +1,8 @@
+# Single namespace for the whole lab. Nothing in this directory ever touches
+# kube-system, or the `helm` namespace where Jenkins lives.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vprofile
+  labels:
+    app.kubernetes.io/part-of: vprofile
