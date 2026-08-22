@@ -1,0 +1,91 @@
+# Docker build context exclusions.
+#
+# Goal: the build context should contain only what is needed to COMPILE the application
+# (pom.xml + src/) plus docker/app/entrypoint.sh. Everything else -- infrastructure code,
+# generated state, secrets, VCS history -- must never reach the builder or the final image.
+
+# --- Version control -------------------------------------------------------
+.git
+.gitignore
+.gitattributes
+.github
+
+# --- Terraform (generated state, plans, provider binaries) -----------------
+.terraform
+.terraform.lock.hcl
+terraform
+*.tf
+*.tfvars
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+
+# --- Vagrant machine state and provisioning --------------------------------
+.vagrant
+vagrant
+Vagrantfile
+
+# --- Other infrastructure not needed to compile the app --------------------
+ansible
+scripts
+Jenkinsfile
+vprofile-ec2-user-data.sh
+k8s
+kubernetes
+helm
+
+# --- Locally generated Maven output ----------------------------------------
+# NOTE: target/ is currently tracked in git (35 .class files). Excluding it here
+# guarantees the WAR in the image can only come from the in-container Maven build.
+target
+**/target
+*.war
+*.jar
+*.class
+
+# --- Local environment / secrets -------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+secrets
+credentials
+
+# --- IDE / editor metadata -------------------------------------------------
+.idea
+.vscode
+*.iml
+*.ipr
+*.iws
+.classpath
+.project
+.settings
+nbproject
+.factorypath
+
+# --- Logs and temporary files ----------------------------------------------
+*.log
+logs
+tmp
+temp
+*.tmp
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- Docs and container tooling (not compile inputs) -----------------------
+docs
+*.md
+*.pdf
+Makefile
+compose.yaml
+compose.yml
+docker-compose*.yml
+docker-compose*.yaml
+docker/nginx

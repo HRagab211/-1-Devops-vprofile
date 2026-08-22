@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Log4j 2 configuration.
+
+  Why this file exists: pom.xml puts log4j-api/log4j-core on the runtime classpath, and Spring's
+  spring-jcl LogAdapter selects the Log4j 2 API ahead of SLF4J whenever log4j-api is present. All
+  Spring, Spring Data, Spring AMQP and Hibernate logging therefore bypasses logback.xml entirely
+  and lands in log4j-core. With no configuration file, log4j-core falls back to its
+  DefaultConfiguration: root level ERROR on the console.
+
+  This file preserves that default exactly (root = ERROR when LOG_LEVEL is unset) while making the
+  level injectable, so a container can turn logging up without a rebuild. logback.xml still governs
+  the loggers that use SLF4J directly (e.g. SecurityServiceImpl).
+
+  Levels: OFF FATAL ERROR WARN INFO DEBUG TRACE ALL
+-->
+<Configuration status="WARN">
+
+  <Appenders>
+    <!-- stdout so container runtimes collect it; no file appender, no log rotation to manage. -->
+    <Console name="STDOUT" target="SYSTEM_OUT">
+      <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n"/>
+    </Console>
+  </Appenders>
+
+  <Loggers>
+    <Logger name="com.visualpathit.account" level="${env:APP_LOG_LEVEL:-ERROR}" additivity="false">
+      <AppenderRef ref="STDOUT"/>
+    </Logger>
+    <Logger name="org.springframework" level="${env:SPRING_LOG_LEVEL:-ERROR}" additivity="false">
+      <AppenderRef ref="STDOUT"/>
+    </Logger>
+    <Logger name="org.hibernate" level="${env:HIBERNATE_LOG_LEVEL:-ERROR}" additivity="false">
+      <AppenderRef ref="STDOUT"/>
+    </Logger>
+    <!-- Hibernate emits generated SQL through this logger; keep it off unless asked for. -->
+    <Logger name="org.hibernate.SQL" level="${env:HIBERNATE_SQL_LOG_LEVEL:-ERROR}" additivity="false">
+      <AppenderRef ref="STDOUT"/>
+    </Logger>
+
+    <Root level="${env:LOG_LEVEL:-ERROR}">
+      <AppenderRef ref="STDOUT"/>
+    </Root>
+  </Loggers>
+
+</Configuration>

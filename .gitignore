@@ -1,0 +1,36 @@
+# Local environment / secrets -- never commit a real .env (.env.example IS committed)
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Maven build output
+# NOTE: target/ was already tracked before this rule was added, so it stays tracked.
+# To stop tracking it:  git rm -r --cached target && git commit
+target/
+
+# Logs and temporary files
+*.log
+logs/
+*.tmp
+*.swp
+*~
+.DS_Store
+
+# IDE metadata
+.idea/
+.vscode/
+*.iml
+.classpath
+.project
+.settings/
+
+# Vagrant machine state
+.vagrant/
+
+# Terraform state (terraform lives on other branches; keep state out regardless)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
