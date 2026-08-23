@@ -36,7 +36,8 @@ spec:
           value: ""
 
     - name: kubectl
-      image: registry.k8s.io/kubectl:v1.36.4
+      image: docker.io/alpine/k8s:1.36.4
+      imagePullPolicy: IfNotPresent
       command:
         - sh
         - -c
