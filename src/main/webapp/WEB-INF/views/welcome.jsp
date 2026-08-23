@@ -41,7 +41,7 @@
                         <div class="navbar-collapse collapse">
                             <ul class="nav navbar-nav">
 
-                                <li><a href="#">My Activity</a></li>
+                                <li><a href="#">Updated By jenkins CI/CD</a></li>
                                <li>
 
                                     <a href="#"><i class="fa fa-bell-o fa-lg" aria-hidden="true"></i></a>
