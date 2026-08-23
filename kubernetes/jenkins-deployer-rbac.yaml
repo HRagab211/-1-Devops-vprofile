@@ -1,27 +1,128 @@
+# Least-privilege identity used by the Jenkins Kubernetes build agent to deploy the
+# application image into `vprofile`.
+#
+# NOT part of kustomization.yaml, and deliberately so:
+#
+#   * kustomization.yaml pins `namespace: vprofile`, which would rewrite the ServiceAccount
+#     below into the wrong namespace -- it must live in `helm`, where the agent pods run.
+#   * `kubectl apply -k kubernetes/` runs during ordinary application delivery. RBAC is not
+#     application delivery; it is a one-off cluster grant that a build must never reconcile.
+#
+# Apply it once, by hand, as a cluster administrator:
+#
+#   kubectl apply -f kubernetes/jenkins-deployer-rbac.yaml
+#
+# Verify it (see docs/jenkins-cicd.md for the full allow/deny matrix):
+#
+#   kubectl auth can-i patch  deployment/vprofile-app -n vprofile \
+#     --as=system:serviceaccount:helm:jenkins-deployer     # -> yes
+#   kubectl auth can-i delete pvc -n vprofile \
+#     --as=system:serviceaccount:helm:jenkins-deployer     # -> no
+
+# =============================================================================
+# Identity -- lives in `helm`, because that is where the ephemeral agent pods run.
+# =============================================================================
+# A dedicated account, NOT the `helm/jenkins` controller account and NOT `helm/default`.
+# The controller account can create pods in `helm`; the agent has no business inheriting
+# that. This account can do exactly one thing: roll the application Deployment.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jenkins-deployer
+  namespace: helm
+  labels:
+    app.kubernetes.io/name: jenkins-deployer
+    app.kubernetes.io/part-of: vprofile
+automountServiceAccountToken: true
+
+---
+# =============================================================================
+# Permissions -- namespaced Role in `vprofile`. No ClusterRole anywhere.
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: jenkins-deployer
   namespace: vprofile
+  labels:
+    app.kubernetes.io/name: jenkins-deployer
+    app.kubernetes.io/part-of: vprofile
 rules:
+  # --- Read-only discovery over Deployments ---------------------------------
+  # `kubectl rollout status` watches the Deployment *collection* with a field selector,
+  # and a collection list/watch cannot be narrowed by resourceNames. This rule is therefore
+  # unrestricted -- but read-only, so it grants no ability to change anything.
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    verbs: ["get", "list", "watch", "patch", "update"]
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["list", "watch"]
+
+  # --- The only write grant in this Role ------------------------------------
+  # resourceNames pins mutation to the application Deployment alone. This is what
+  # mechanically prevents the pipeline from ever touching vprofile-nginx, vprofile-cache
+  # or vprofile-rabbitmq, rather than merely asking it not to. `patch` covers both
+  # `kubectl set image` and `kubectl rollout undo`; `update` is included because the
+  # rollback path may fall back to a full object update.
+  #
+  # Note there is no `create` and no `delete`: the pipeline can roll the Deployment but
+  # can never remove or recreate it.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["vprofile-app"]
+    verbs: ["get", "patch", "update"]
+
+  # --- Rollout diagnostics --------------------------------------------------
+  # ReplicaSets show which revision is progressing; `rollout undo` reads them to find the
+  # previous revision. Read-only.
   - apiGroups: ["apps"]
     resources: ["replicasets"]
     verbs: ["get", "list", "watch"]
+
+  # Pod state and application logs, so a failed rollout produces a real diagnosis instead
+  # of a bare non-zero exit code. Read-only: no delete, no exec, no port-forward.
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+
+  # Recent namespace events -- the usual source of ImagePullBackOff / scheduling reasons.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+
+  # Service/Endpoints reads for post-deploy verification of the nginx entry point.
+  - apiGroups: [""]
+    resources: ["services", "endpoints"]
+    verbs: ["get", "list"]
+
+  # Deliberately absent, and each omission is load-bearing:
+  #   secrets                 -- the pipeline never reads application credentials
+  #   configmaps              -- delivery changes the image, never the configuration
+  #   persistentvolumeclaims  -- no PVC read, and above all no PVC delete
+  #   persistentvolumes       -- cluster-scoped; a namespaced Role cannot grant it anyway
+  #   statefulsets            -- vprofile-db is a StatefulSet and stays untouched
+  #   namespaces              -- nothing here can delete the namespace
+  #   pods/exec, pods/portforward, pods delete
+  #   any wildcard apiGroup, resource or verb
+
 ---
+# =============================================================================
+# Binding -- in `vprofile`, pointing at the ServiceAccount in `helm`.
+# =============================================================================
+# This cross-namespace subject is the whole point: agents stay in `helm`, the application
+# stays in `vprofile`, and neither namespace has to move.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: jenkins-deployer
   namespace: vprofile
+  labels:
+    app.kubernetes.io/name: jenkins-deployer
+    app.kubernetes.io/part-of: vprofile
 subjects:
   - kind: ServiceAccount
-    name: jenkins
+    name: jenkins-deployer
     namespace: helm
 roleRef:
   apiGroup: rbac.authorization.k8s.io
