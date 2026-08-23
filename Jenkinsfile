@@ -1,122 +1,200 @@
 pipeline {
-    
-	agent any
-	
-	tools {
-	jdk "JDK17"	
-        maven "MAVEN3.9"
+    agent {
+        kubernetes {
+            defaultContainer 'maven'
+
+            yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins
+
+  containers:
+    - name: maven
+      image: maven:3.9-eclipse-temurin-17
+      command:
+        - cat
+      tty: true
+
+    - name: docker
+      image: docker:27-cli
+      command:
+        - cat
+      tty: true
+      env:
+        - name: DOCKER_HOST
+          value: tcp://localhost:2375
+        - name: DOCKER_TLS_CERTDIR
+          value: ""
+
+    - name: dind
+      image: docker:27-dind
+      securityContext:
+        privileged: true
+      env:
+        - name: DOCKER_TLS_CERTDIR
+          value: ""
+
+    - name: kubectl
+      image: registry.k8s.io/kubectl:v1.36.4
+      command:
+        - sh
+        - -c
+        - cat
+      tty: true
+'''
+        }
     }
-	
+
+    triggers {
+        githubPush()
+    }
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        timeout(time: 30, unit: 'MINUTES')
+    }
+
     environment {
-        NEXUS_VERSION = "nexus3"
-        NEXUS_PROTOCOL = "http"
-        NEXUS_URL = "172.31.40.209:8081"
-        NEXUS_REPOSITORY = "vprofile-release"
-	NEXUS_REPO_ID    = "vprofile-release"
-        NEXUS_CREDENTIAL_ID = "nexuslogin"
-        ARTVERSION = "${env.BUILD_ID}"
+        DOCKERHUB_REPOSITORY = 'YOUR_DOCKERHUB_USERNAME/vprofile-app'
+        DOCKERHUB_CREDENTIALS = 'dockerhub-credentials'
+
+        K8S_NAMESPACE = 'vprofile'
+        K8S_DEPLOYMENT = 'vprofile-app'
+        K8S_CONTAINER = 'app'
     }
-	
-    stages{
-        
-        stage('BUILD'){
+
+    stages {
+        stage('Checkout') {
             steps {
-                sh 'mvn clean install -DskipTests'
-            }
-            post {
-                success {
-                    echo 'Now Archiving...'
-                    archiveArtifacts artifacts: '**/target/*.war'
-                }
-            }
-        }
+                checkout scm
 
-	stage('UNIT TEST'){
-            steps {
-                sh 'mvn test'
-            }
-        }
-
-	stage('INTEGRATION TEST'){
-            steps {
-                sh 'mvn verify -DskipUnitTests'
-            }
-        }
-		
-        stage ('CODE ANALYSIS WITH CHECKSTYLE'){
-            steps {
-                sh 'mvn checkstyle:checkstyle'
-            }
-            post {
-                success {
-                    echo 'Generated Analysis Result'
-                }
-            }
-        }
-
-        stage('CODE ANALYSIS with SONARQUBE') {
-          
-		  environment {
-             scannerHome = tool 'sonarscanner4'
-          }
-
-          steps {
-            withSonarQubeEnv('sonar-pro') {
-               sh '''${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=vprofile \
-                   -Dsonar.projectName=vprofile-repo \
-                   -Dsonar.projectVersion=1.0 \
-                   -Dsonar.sources=src/ \
-                   -Dsonar.java.binaries=target/test-classes/com/visualpathit/account/controllerTest/ \
-                   -Dsonar.junit.reportsPath=target/surefire-reports/ \
-                   -Dsonar.jacoco.reportsPath=target/jacoco.exec \
-                   -Dsonar.java.checkstyle.reportPaths=target/checkstyle-result.xml'''
-            }
-
-            timeout(time: 10, unit: 'MINUTES') {
-               waitForQualityGate abortPipeline: true
-            }
-          }
-        }
-
-        stage("Publish to Nexus Repository Manager") {
-            steps {
                 script {
-                    pom = readMavenPom file: "pom.xml";
-                    filesByGlob = findFiles(glob: "target/*.${pom.packaging}");
-                    echo "${filesByGlob[0].name} ${filesByGlob[0].path} ${filesByGlob[0].directory} ${filesByGlob[0].length} ${filesByGlob[0].lastModified}"
-                    artifactPath = filesByGlob[0].path;
-                    artifactExists = fileExists artifactPath;
-                    if(artifactExists) {
-                        echo "*** File: ${artifactPath}, group: ${pom.groupId}, packaging: ${pom.packaging}, version ${pom.version} ARTVERSION";
-                        nexusArtifactUploader(
-                            nexusVersion: NEXUS_VERSION,
-                            protocol: NEXUS_PROTOCOL,
-                            nexusUrl: NEXUS_URL,
-                            groupId: pom.groupId,
-                            version: ARTVERSION,
-                            repository: NEXUS_REPOSITORY,
-                            credentialsId: NEXUS_CREDENTIAL_ID,
-                            artifacts: [
-                                [artifactId: pom.artifactId,
-                                classifier: '',
-                                file: artifactPath,
-                                type: pom.packaging],
-                                [artifactId: pom.artifactId,
-                                classifier: '',
-                                file: "pom.xml",
-                                type: "pom"]
-                            ]
-                        );
-                    } 
-		    else {
-                        error "*** File: ${artifactPath}, could not be found";
+                    env.GIT_SHORT_COMMIT = sh(
+                        script: 'git rev-parse --short=8 HEAD',
+                        returnStdout: true
+                    ).trim()
+
+                    env.IMAGE_TAG = "${BUILD_NUMBER}-${GIT_SHORT_COMMIT}"
+                    env.VERSIONED_IMAGE =
+                        "${DOCKERHUB_REPOSITORY}:${IMAGE_TAG}"
+                }
+
+                echo "Building ${VERSIONED_IMAGE}"
+            }
+        }
+
+        stage('Verify') {
+            steps {
+                container('maven') {
+                    sh '''
+                        mvn --batch-mode clean test
+                    '''
+                }
+            }
+        }
+
+        stage('Build image') {
+            steps {
+                container('docker') {
+                    sh '''
+                        timeout 120 sh -c \
+                          'until docker info >/dev/null 2>&1; do sleep 2; done'
+
+                        docker build \
+                          --tag "${VERSIONED_IMAGE}" \
+                          --tag "${DOCKERHUB_REPOSITORY}:latest" \
+                          .
+                    '''
+                }
+            }
+        }
+
+        stage('Push image') {
+            steps {
+                container('docker') {
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: env.DOCKERHUB_CREDENTIALS,
+                            usernameVariable: 'DOCKERHUB_USERNAME',
+                            passwordVariable: 'DOCKERHUB_TOKEN'
+                        )
+                    ]) {
+                        sh '''
+                            echo "${DOCKERHUB_TOKEN}" |
+                              docker login \
+                                --username "${DOCKERHUB_USERNAME}" \
+                                --password-stdin
+
+                            docker push "${VERSIONED_IMAGE}"
+                            docker push "${DOCKERHUB_REPOSITORY}:latest"
+                            docker logout
+                        '''
                     }
                 }
             }
         }
 
+        stage('Deploy') {
+            steps {
+                container('kubectl') {
+                    sh '''
+                        kubectl set image \
+                          deployment/${K8S_DEPLOYMENT} \
+                          ${K8S_CONTAINER}=${VERSIONED_IMAGE} \
+                          --namespace=${K8S_NAMESPACE}
 
+                        kubectl rollout status \
+                          deployment/${K8S_DEPLOYMENT} \
+                          --namespace=${K8S_NAMESPACE} \
+                          --timeout=300s
+                    '''
+                }
+            }
+        }
+
+        stage('Verify deployment') {
+            steps {
+                container('kubectl') {
+                    sh '''
+                        kubectl get deployment,pods,service \
+                          --namespace=${K8S_NAMESPACE} \
+                          -o wide
+
+                        kubectl get deployment/${K8S_DEPLOYMENT} \
+                          --namespace=${K8S_NAMESPACE} \
+                          -o jsonpath='{.spec.template.spec.containers[?(@.name=="app")].image}'
+
+                        echo
+                    '''
+                }
+            }
+        }
     }
 
+    post {
+        success {
+            echo "Successfully deployed ${VERSIONED_IMAGE}"
+        }
 
+        failure {
+            container('kubectl') {
+                sh '''
+                    kubectl get pods \
+                      --namespace=${K8S_NAMESPACE} \
+                      -o wide || true
+
+                    kubectl get events \
+                      --namespace=${K8S_NAMESPACE} \
+                      --sort-by=.lastTimestamp |
+                      tail -30 || true
+                '''
+            }
+        }
+
+        always {
+            cleanWs()
+        }
+    }
 }
