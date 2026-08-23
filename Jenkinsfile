@@ -47,12 +47,13 @@ spec:
     }
 
     triggers {
-        githubPush()
+    pollSCM('H/2 * * * *')
     }
 
     options {
-        timestamps()
+        // timestamps()
         disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
         timeout(time: 30, unit: 'MINUTES')
     }
 
