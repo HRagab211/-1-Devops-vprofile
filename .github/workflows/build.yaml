@@ -1,0 +1,13 @@
+name: build java vprofile application and push to dockerhub
+on:
+    push:
+        branches:
+            - github-actions
+    workflow_dispatch:
+jobs:
+    build:
+        name: clone and build the docker image
+        runs-on: ubuntu-latest
+        steps:
+            - name: checkout the repo
+              run: echo "workflow is done "
