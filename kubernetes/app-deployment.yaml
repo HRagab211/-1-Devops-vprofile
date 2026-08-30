@@ -28,7 +28,7 @@ spec:
       containers:
         - name: app
           # Replace this placeholder after pushing the image built from this repository.
-          image: YOUR_REGISTRY/YOUR_VPROFILE_IMAGE:YOUR_TAG
+          image: hragab211/profile-app:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
