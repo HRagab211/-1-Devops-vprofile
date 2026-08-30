@@ -5,9 +5,11 @@ on:
             - github-actions
     workflow_dispatch:
 jobs:
-    build:
+    build:    
         name: clone and build the docker image
         runs-on: ubuntu-latest
         steps:
             - name: checkout the repo
-              run: echo "workflow is done "
+              uses: actions/checkout@v7
+            - name: list dir
+              run: ls -al
